@@ -122,6 +122,7 @@ class CommonModelApi(ModelResource):
         'hazard_unit',
         'hazard_period',
         'hazard_set',
+        'typename',
     ]
 
     def build_filters(self, filters=None):
