@@ -158,6 +158,18 @@ class Region(MPTTModel):
     def __unicode__(self):
         return self.name
 
+    @property
+    def bbox(self):
+        return [self.bbox_x0, self.bbox_x1, self.bbox_y0, self.bbox_y1, self.srid]
+
+    @property
+    def bbox_string(self):
+        return ",".join([str(self.bbox_x0), str(self.bbox_y0), str(self.bbox_x1), str(self.bbox_y1)])
+
+    @property
+    def geographic_bounding_box(self):
+        return bbox_to_wkt(self.bbox_x0, self.bbox_x1, self.bbox_y0, self.bbox_y1, srid=self.srid)
+
     class Meta:
         ordering = ("name",)
         verbose_name_plural = 'Metadata Regions'
@@ -566,7 +578,7 @@ class ResourceBase(PolymorphicModel, PermissionLevelMixin, ItemBase):
 
     @property
     def bbox(self):
-        return [self.bbox_x0, self.bbox_y0, self.bbox_x1, self.bbox_y1, self.srid]
+        return [self.bbox_x0, self.bbox_x1, self.bbox_y0, self.bbox_y1, self.srid]
 
     @property
     def bbox_string(self):
@@ -680,7 +692,7 @@ class ResourceBase(PolymorphicModel, PermissionLevelMixin, ItemBase):
         """
         self.set_latlon_bounds(bbox)
 
-        minx, miny, maxx, maxy = [float(c) for c in bbox]
+        minx, maxx, miny, maxy = [float(c) for c in bbox]
         x = (minx + maxx) / 2
         y = (miny + maxy) / 2
         (center_x, center_y) = forward_mercator((x, y))
