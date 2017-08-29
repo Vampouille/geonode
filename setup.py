@@ -26,7 +26,7 @@ on_rtd = os.environ.get('READTHEDOCS', None) == 'True'
 if on_rtd:
     shapely_dep = "Shapely<1.5.13"
 else:
-    shapely_dep = "Shapely>=1.5.13"
+    shapely_dep = "Shapely==1.5.17"
 
 setup(name='GeoNode',
       version=__import__('geonode').get_version(),
@@ -73,6 +73,7 @@ setup(name='GeoNode',
         "django-pagination >=1.0.5, <=1.0.7",  # python-django-pagination (1.0.7)
         "django-extensions>=1.2.5",  # python-django-extensions (1.5.9)
         "django-jsonfield>=0.9.16",  # python-django-jsonfield (0.9.15, 1.0.1 in our ppa)
+        "django-jsonfield-compat>=0.4.4",
         "django-taggit>=0.21.0",  # python-django-taggit (0.18.0)
         "django-mptt>=0.8.6",  # django-mptt (0.8.0, 0.8.6 in our ppa)
         "django-treebeard>=3.0",  # django-treebeard (4.0)
@@ -80,7 +81,8 @@ setup(name='GeoNode',
         "django-downloadview>=1.2",  # python-django-downloadview (1.8)
         "django-polymorphic>=0.9.2",  # python-django-polymorphic (0.8.1) FIXME
         "django-tastypie>=0.12.2, <=0.13.1",  # python-django-tastypie (0.12.0, 0.12.2 in our ppa)
-        "django-oauth-toolkit>=0.10.0",  # python-django-oauth-toolkit (0.10.0)
+        "django-oauth-toolkit>=0.10.0, <1.0",  # python-django-oauth-toolkit (0.10.0)
+        "oauthlib==2.0.1",
 
         # geopython dependencies
         "pyproj>=1.9.3",  # python-pyproj (1.9.5)
