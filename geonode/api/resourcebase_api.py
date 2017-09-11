@@ -35,6 +35,7 @@ from django.conf.urls import url
 from django.core.paginator import Paginator, InvalidPage
 from django.http import Http404
 from django.core.exceptions import ObjectDoesNotExist
+from django.contrib.auth.models import Group
 
 from tastypie.utils.mime import build_content_type
 
@@ -169,6 +170,12 @@ class CommonModelApi(ModelResource):
         else:
             filtered = semi_filtered
 
+        if settings.ADMIN_MODERATE_UPLOADS:
+            filtered = self.filter_published(filtered, request)
+
+        if settings.GROUP_PRIVATE_RESOURCES:
+            filtered = self.filter_group(filtered, request)
+
         if extent:
             filtered = self.filter_bbox(filtered, extent)
 
@@ -177,13 +184,53 @@ class CommonModelApi(ModelResource):
 
         return filtered
 
+    def filter_published(self, queryset, request):
+        is_admin = False
+        is_staff = False
+        if request.user:
+            is_admin = request.user.is_superuser if request.user else False
+            is_staff = request.user.is_staff if request.user else False
+
+        if not is_admin and not is_staff:
+            filtered = queryset.filter(Q(is_published=True))
+        else:
+            filtered = queryset
+        return filtered
+
+    def filter_group(self, queryset, request):
+        is_admin = False
+        if request.user:
+            is_admin = request.user.is_superuser if request.user else False
+
+        try:
+            anonymous_group = Group.objects.get(name='anonymous')
+        except:
+            anonymous_group = None
+
+        if is_admin:
+            filtered = queryset
+        elif request.user:
+            groups = request.user.groups.all()
+            if anonymous_group:
+                filtered = queryset.filter(
+                    Q(group__isnull=True) | Q(group__in=groups) | Q(group=anonymous_group))
+            else:
+                filtered = queryset.filter(Q(group__isnull=True) | Q(group__in=groups))
+        else:
+            if anonymous_group:
+                filtered = queryset.filter(Q(group__isnull=True) | Q(group=anonymous_group))
+            else:
+                filtered = queryset.filter(Q(group__isnull=True))
+        return filtered
+
     def filter_h_keywords(self, queryset, keywords):
         filtered = queryset
         treeqs = HierarchicalKeyword.objects.none()
         for keyword in keywords:
             try:
-                kw = HierarchicalKeyword.objects.get(name=keyword)
-                treeqs = treeqs | HierarchicalKeyword.get_tree(kw)
+                kws = HierarchicalKeyword.objects.filter(name__iexact=keyword)
+                for kw in kws:
+                    treeqs = treeqs | HierarchicalKeyword.get_tree(kw)
             except ObjectDoesNotExist:
                 # Ignore keywords not actually used?
                 pass
@@ -203,7 +250,6 @@ class CommonModelApi(ModelResource):
         bbox = bbox.split(
             ',')  # TODO: Why is this different when done through haystack?
         bbox = map(str, bbox)  # 2.6 compat - float to decimal conversion
-
         intersects = ~(Q(bbox_x0__gt=bbox[2]) | Q(bbox_x1__lt=bbox[0]) |
                        Q(bbox_y0__gt=bbox[3]) | Q(bbox_y1__lt=bbox[1]))
 
@@ -397,10 +443,41 @@ class CommonModelApi(ModelResource):
         sqs = self.build_haystack_filters(request.GET)
 
         if not settings.SKIP_PERMS_FILTER:
+            is_admin = False
+            is_staff = False
+            if request.user:
+                is_admin = request.user.is_superuser if request.user else False
+                is_staff = request.user.is_staff if request.user else False
+
             # Get the list of objects the user has access to
             filter_set = get_objects_for_user(request.user, 'base.view_resourcebase')
+            if settings.ADMIN_MODERATE_UPLOADS:
+                if not is_admin and not is_staff:
+                    filter_set = filter_set.filter(is_published=True)
+
             if settings.RESOURCE_PUBLISHING:
                 filter_set = filter_set.filter(is_published=True)
+
+            try:
+                anonymous_group = Group.objects.get(name='anonymous')
+            except:
+                anonymous_group = None
+
+            if settings.GROUP_PRIVATE_RESOURCES:
+                if is_admin:
+                    filter_set = filter_set
+                elif request.user:
+                    groups = request.user.groups.all()
+                    if anonymous_group:
+                        filter_set = filter_set.filter(
+                            Q(group__isnull=True) | Q(group__in=groups) | Q(group=anonymous_group))
+                    else:
+                        filter_set = filter_set.filter(Q(group__isnull=True) | Q(group__in=groups))
+                else:
+                    if anonymous_group:
+                        filter_set = filter_set.filter(Q(group__isnull=True) | Q(group=anonymous_group))
+                    else:
+                        filter_set = filter_set.filter(Q(group__isnull=True))
 
             filter_set_ids = filter_set.values_list('id')
             # Do the query using the filterset and the query term. Facet the
@@ -427,7 +504,7 @@ class CommonModelApi(ModelResource):
 
             try:
                 page = paginator.page(
-                    int(request.GET.get('offset')) /
+                    int(request.GET.get('offset') or 0) /
                     int(request.GET.get('limit'), 0) + 1)
             except InvalidPage:
                 raise Http404("Sorry, no results on that page.")
@@ -460,6 +537,7 @@ class CommonModelApi(ModelResource):
             },
            "objects": map(lambda x: self.get_haystack_api_fields(x), objects),
         }
+
         self.log_throttled_access(request)
         return self.create_response(request, object_list)
 
@@ -524,6 +602,7 @@ class CommonModelApi(ModelResource):
         if response_objects:
             filtered_objects_ids = [item.id for item in response_objects if
                                     request.user.has_perm('view_resourcebase', item.get_self_resource())]
+
         if isinstance(
                 data,
                 dict) and 'objects' in data and not isinstance(

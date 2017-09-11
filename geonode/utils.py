@@ -26,6 +26,9 @@ import math
 import os
 import re
 import uuid
+import subprocess
+import select
+from StringIO import StringIO
 
 from osgeo import ogr
 from slugify import Slugify
@@ -130,6 +133,8 @@ def _split_query(query):
 
 
 def bbox_to_wkt(x0, x1, y0, y1, srid="4326"):
+    if srid and srid.startswith('EPSG:'):
+        srid = srid[5:]
     if None not in [x0, x1, y0, y1]:
         wkt = 'SRID=%s;POLYGON((%s %s,%s %s,%s %s,%s %s,%s %s))' % (
             srid, x0, y0, x0, y1, x1, y1, x1, y0, x0, y0)
@@ -576,6 +581,8 @@ def json_response(body=None, errors=None, redirect_to=None, exception=None,
     exception message will be used as a format option to that string and the
     result will be a success=False, errors = body % exception
     """
+    if isinstance(body, HttpResponse):
+        return body
     if content_type is None:
         content_type = "application/json"
     if errors:
@@ -916,3 +923,28 @@ def resignals():
         for signal in signals:
             signaltype.connect(signal['receiv_call'], sender=signal['sender_ista'],
                                weak=signal['is_weak'], dispatch_uid=signal['uid'])
+
+
+def run_subprocess(*cmd, **kwargs):
+    p = subprocess.Popen(' '.join(cmd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)
+    stdout = StringIO()
+    stderr = StringIO()
+    buff_size = 1024
+    while p.poll() is None:
+        inr = [p.stdout.fileno(), p.stderr.fileno()]
+        inw = []
+        rlist, wlist, xlist = select.select(inr, inw, [])
+
+        for r in rlist:
+            if r == p.stdout.fileno():
+                readfrom = p.stdout
+                readto = stdout
+            else:
+                readfrom = p.stderr
+                readto = stderr
+            readto.write(readfrom.read(buff_size))
+
+        for w in wlist:
+            w.write('')
+
+    return p.returncode, stdout.getvalue(), stderr.getvalue()

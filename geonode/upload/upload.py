@@ -638,14 +638,13 @@ def final_step(upload_session, user):
                     e.args = (msg,)
 
         if style:
-            # FIXME: Should we use the fully qualified typename?
             publishing.default_style = style
             _log('default style set to %s', name)
             cat.save(publishing)
 
     _log('Creating Django record for [%s]', name)
     target = task.target
-    typename = task.get_target_layer_name()
+    alternate = task.get_target_layer_name()
     layer_uuid = str(uuid.uuid1())
 
     title = upload_session.layer_title
@@ -680,7 +679,7 @@ def final_step(upload_session, user):
                 name=task.layer.name,
                 defaults=dict(store=target.name,
                               storeType=target.store_type,
-                              typename=typename,
+                              alternate=alternate,
                               workspace=target.workspace_name,
                               title=title,
                               uuid=layer_uuid,
@@ -714,7 +713,7 @@ def final_step(upload_session, user):
             name=task.layer.name,
             defaults=dict(store=target.name,
                           storeType=target.store_type,
-                          typename=typename,
+                          alternate=alternate,
                           workspace=target.workspace_name,
                           title=title,
                           uuid=layer_uuid,
@@ -917,6 +916,6 @@ max\ connections={db_conn_max}"""
         cat = gs_catalog
         cat._cache.clear()
         cat.reset()
-        cat.reload()
+        # cat.reload()
 
         return append_to_mosaic_name

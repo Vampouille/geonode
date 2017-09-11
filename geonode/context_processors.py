@@ -23,6 +23,8 @@ from geonode import get_version
 from geonode.catalogue import default_catalogue_backend
 from django.contrib.sites.models import Site
 
+from geonode.notifications_helper import has_notifications
+
 
 def resource_urls(request):
     """Global values to pass to templates"""
@@ -30,11 +32,12 @@ def resource_urls(request):
     defaults = dict(
         STATIC_URL=settings.STATIC_URL,
         CATALOGUE_BASE_URL=default_catalogue_backend()['URL'],
-        REGISTRATION_OPEN=settings.REGISTRATION_OPEN,
+        ACCOUNT_OPEN_SIGNUP=settings.ACCOUNT_OPEN_SIGNUP,
         VERSION=get_version(),
         SITE_NAME=site.name,
         SITE_DOMAIN=site.domain,
         SITEURL=settings.SITEURL,
+        INSTALLED_APPS=settings.INSTALLED_APPS,
         RESOURCE_PUBLISHING=settings.RESOURCE_PUBLISHING,
         THEME_ACCOUNT_CONTACT_EMAIL=settings.THEME_ACCOUNT_CONTACT_EMAIL,
         DEBUG_STATIC=getattr(
@@ -45,9 +48,17 @@ def resource_urls(request):
             settings,
             'PROXY_URL',
             '/proxy/?url='),
-        SOCIAL_BUTTONS=getattr(
+        DISPLAY_SOCIAL=getattr(
             settings,
-            'SOCIAL_BUTTONS',
+            'DISPLAY_SOCIAL',
+            False),
+        DISPLAY_COMMENTS=getattr(
+            settings,
+            'DISPLAY_COMMENTS',
+            False),
+        DISPLAY_RATINGS=getattr(
+            settings,
+            'DISPLAY_RATINGS',
             False),
         TWITTER_CARD=getattr(
             settings,
@@ -105,7 +116,7 @@ def resource_urls(request):
             dict()).get(
             'METADATA',
             'never'),
-        USE_NOTIFICATIONS=('notification' in settings.INSTALLED_APPS),
+        USE_NOTIFICATIONS=has_notifications,
         DEFAULT_ANONYMOUS_VIEW_PERMISSION=getattr(settings, 'DEFAULT_ANONYMOUS_VIEW_PERMISSION', False),
         DEFAULT_ANONYMOUS_DOWNLOAD_PERMISSION=getattr(settings, 'DEFAULT_ANONYMOUS_DOWNLOAD_PERMISSION', False),
         EXIF_ENABLED=getattr(
@@ -122,6 +133,11 @@ def resource_urls(request):
             False
         ),
         THESAURI_FILTERS=[t['name'] for t in settings.THESAURI if t.get('filter')],
+        MAP_CLIENT_USE_CROSS_ORIGIN_CREDENTIALS=getattr(
+            settings, 'MAP_CLIENT_USE_CROSS_ORIGIN_CREDENTIALS', False
+        ),
     )
+    defaults['message_create_url'] = 'message_create' if not settings.USER_MESSAGES_ALLOW_MULTIPLE_RECIPIENTS\
+        else 'message_create_multiple'
 
     return defaults

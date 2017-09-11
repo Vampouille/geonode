@@ -38,13 +38,14 @@ from django.core.exceptions import ObjectDoesNotExist
 from django.core.files.storage import default_storage as storage
 from django.core.files import File
 from django.conf import settings
+from django.db import transaction
 from django.db.models import Q
 
 # Geonode functionality
 from geonode import GeoNodeException
 from geonode.people.utils import get_valid_user
 from geonode.layers.models import Layer, UploadSession
-from geonode.base.models import Link, SpatialRepresentationType, TopicCategory, Region
+from geonode.base.models import Link, SpatialRepresentationType, TopicCategory, Region, License
 from geonode.layers.models import shp_exts, csv_exts, vec_exts, cov_exts
 from geonode.layers.metadata import set_metadata
 from geonode.utils import http_client
@@ -370,9 +371,12 @@ def extract_tarfile(upload_file, extension='.shp', tempdir=None):
 
 
 def file_upload(filename, name=None, user=None, title=None, abstract=None,
-                keywords=None, category=None, regions=None, date=None,
+                license=None,
+                category=None, keywords=None, regions=None,
+                date=None,
                 skip=True, overwrite=False, charset='UTF-8',
-                metadata_uploaded_preserve=False):
+                metadata_uploaded_preserve=False,
+                metadata_upload_form=False):
     """Saves a layer in GeoNode asking as little information as possible.
        Only filename is required, user and title are optional.
     """
@@ -398,9 +402,24 @@ def file_upload(filename, name=None, user=None, title=None, abstract=None,
     # Create a name from the title if it is not passed.
     if name is None:
         name = slugify(title).replace('-', '_')
+    else:
+        name = slugify(name)  # assert that name is slugified
+
+    if license is not None:
+        licenses = License.objects.filter(
+            Q(name__iexact=license) |
+            Q(abbreviation__iexact=license) |
+            Q(url__iexact=license) |
+            Q(description__iexact=license))
+        if len(licenses) == 1:
+            license = licenses[0]
+        else:
+            license = None
 
     if category is not None:
-        categories = TopicCategory.objects.filter(Q(identifier__iexact=category) | Q(gn_description__iexact=category))
+        categories = TopicCategory.objects.filter(
+            Q(identifier__iexact=category) |
+            Q(gn_description__iexact=category))
         if len(categories) == 1:
             category = categories[0]
         else:
@@ -440,6 +459,7 @@ def file_upload(filename, name=None, user=None, title=None, abstract=None,
         'bbox_y0': bbox_y0,
         'bbox_y1': bbox_y1,
         'is_published': is_published,
+        'license': license,
         'category': category
     }
 
@@ -494,10 +514,17 @@ def file_upload(filename, name=None, user=None, title=None, abstract=None,
         defaults['storeType'] = 'coverageStore'
 
     # Create a Django object.
-    layer, created = Layer.objects.get_or_create(
-        name=valid_name,
-        defaults=defaults
-    )
+    with transaction.atomic():
+        if not metadata_upload_form:
+            layer, created = Layer.objects.get_or_create(
+                name=valid_name,
+                defaults=defaults
+            )
+        elif identifier:
+            layer, created = Layer.objects.get_or_create(
+                uuid=identifier,
+                defaults=defaults
+            )
 
     # Delete the old layers if overwrite is true
     # and the layer was not just created
@@ -522,19 +549,43 @@ def file_upload(filename, name=None, user=None, title=None, abstract=None,
     regions_resolved = list(set(regions_resolved))
     if regions_resolved:
         if len(regions_resolved) > 0:
+            layer.regions.clear()
             layer.regions.add(*regions_resolved)
+
+    saveAgain = False
+
+    if title is not None:
+        layer.title = title
+        saveAgain = True
+
+    if abstract is not None:
+        layer.abstract = abstract
+        saveAgain = True
 
     if date is not None:
         layer.date = datetime.strptime(date, '%Y-%m-%d %H:%M:%S')
+        saveAgain = True
+
+    if license is not None:
+        layer.license = license
+        saveAgain = True
+
+    if category is not None:
+        layer.category = category
+        saveAgain = True
+
+    if saveAgain:
         layer.save()
 
     return layer
 
 
 def upload(incoming, user=None, overwrite=False,
-           keywords=[], category=None, regions=[],
+           name=None, title=None, abstract=None, date=None,
+           license=None,
+           category=None, keywords=None, regions=None,
            skip=True, ignore_errors=True,
-           verbosity=1, console=None, title=None, date=None,
+           verbosity=1, console=None,
            private=False, metadata_uploaded_preserve=False):
     """Upload a directory of spatial data files to GeoNode
 
@@ -583,6 +634,10 @@ def upload(incoming, user=None, overwrite=False,
         msg = "Found %d potential layers." % number
         print >> console, msg
 
+    if (number > 1) and (name is not None):
+        msg = 'Failed to process.  Cannot specify name with multiple imports.'
+        raise Exception(msg)
+
     output = []
     for i, file_pair in enumerate(potential_files):
         basename, filename = file_pair
@@ -615,13 +670,16 @@ def upload(incoming, user=None, overwrite=False,
                     filename = extract_tarfile(filename)
 
                 layer = file_upload(filename,
+                                    name=name,
+                                    title=title,
+                                    abstract=abstract,
+                                    date=date,
                                     user=user,
                                     overwrite=overwrite,
-                                    keywords=keywords,
+                                    license=license,
                                     category=category,
+                                    keywords=keywords,
                                     regions=regions,
-                                    title=title,
-                                    date=date,
                                     metadata_uploaded_preserve=metadata_uploaded_preserve
                                     )
                 if not existed:

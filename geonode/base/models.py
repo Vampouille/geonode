@@ -21,7 +21,9 @@
 import datetime
 import math
 import os
+import re
 import logging
+import traceback
 import uuid
 import urllib
 import urllib2
@@ -32,17 +34,18 @@ from urlparse import urljoin, urlsplit
 
 from django.db import models
 from django.core import serializers
-from django.db.models import Q
+from django.db.models import Q, signals
 from django.utils.translation import ugettext_lazy as _
 from django.core.exceptions import ValidationError
 from django.conf import settings
 from django.contrib.staticfiles.templatetags import staticfiles
 from django.contrib.contenttypes.models import ContentType
 from django.contrib.auth import get_user_model
-from django.db.models import signals
+from django.contrib.auth.models import Group
 from django.contrib.auth.signals import user_logged_in, user_logged_out
 from django.core.files.storage import default_storage as storage
 from django.core.files.base import ContentFile
+from django.contrib.gis.geos import GEOSGeometry
 
 from mptt.models import MPTTModel, TreeForeignKey
 
@@ -154,6 +157,14 @@ class Region(MPTTModel):
     code = models.CharField(max_length=50, unique=True)
     name = models.CharField(max_length=255)
     parent = TreeForeignKey('self', null=True, blank=True, related_name='children')
+
+    # Save bbox values in the database.
+    # This is useful for spatial searches and for generating thumbnail images and metadata records.
+    bbox_x0 = models.DecimalField(max_digits=19, decimal_places=10, blank=True, null=True)
+    bbox_x1 = models.DecimalField(max_digits=19, decimal_places=10, blank=True, null=True)
+    bbox_y0 = models.DecimalField(max_digits=19, decimal_places=10, blank=True, null=True)
+    bbox_y1 = models.DecimalField(max_digits=19, decimal_places=10, blank=True, null=True)
+    srid = models.CharField(max_length=255, default='EPSG:4326')
 
     def __unicode__(self):
         return self.name
@@ -461,12 +472,13 @@ class ResourceBase(PolymorphicModel, PermissionLevelMixin, ItemBase):
                                             help_text=date_help_text, null=True, blank=True)
     metadata_update_date = models.DateTimeField(_('metadata update date'), auto_now=True,
                                                 help_text=date_help_text, null=True, blank=True)
+    alternate = models.CharField(max_length=128, null=True, blank=True)
     date = models.DateTimeField(_('date'), default=datetime.datetime.now, help_text=date_help_text)
     date_type = models.CharField(_('date type'), max_length=255, choices=VALID_DATE_TYPES, default='publication',
                                  help_text=date_type_help_text)
     edition = models.CharField(_('edition'), max_length=255, blank=True, null=True, help_text=edition_help_text)
-    abstract = models.TextField(_('abstract'), blank=True, help_text=abstract_help_text)
-    purpose = models.TextField(_('purpose'), null=True, blank=True, help_text=purpose_help_text)
+    abstract = models.TextField(_('abstract'), max_length=2000, blank=True, help_text=abstract_help_text)
+    purpose = models.TextField(_('purpose'), max_length=500, null=True, blank=True, help_text=purpose_help_text)
     maintenance_frequency = models.CharField(_('maintenance frequency'), max_length=255, choices=UPDATE_FREQUENCIES,
                                              blank=True, null=True, help_text=maintenance_frequency_help_text)
 
@@ -503,12 +515,15 @@ class ResourceBase(PolymorphicModel, PermissionLevelMixin, ItemBase):
     temporal_extent_end = models.DateTimeField(_('temporal extent end'), blank=True, null=True,
                                                help_text=temporal_extent_end_help_text)
 
-    supplemental_information = models.TextField(_('supplemental information'), default=DEFAULT_SUPPLEMENTAL_INFORMATION,
+    supplemental_information = models.TextField(_('supplemental information'), max_length=2000,
+                                                default=DEFAULT_SUPPLEMENTAL_INFORMATION,
                                                 help_text=_('any other descriptive information about the dataset'))
 
     # Section 8
-    data_quality_statement = models.TextField(_('data quality statement'), blank=True, null=True,
+    data_quality_statement = models.TextField(_('data quality statement'), max_length=2000, blank=True, null=True,
                                               help_text=data_quality_statement_help_text)
+
+    group = models.ForeignKey(Group, null=True, blank=True)
 
     # Section 9
     # see metadata_author property definition below
@@ -577,6 +592,12 @@ class ResourceBase(PolymorphicModel, PermissionLevelMixin, ItemBase):
         return self.title
 
     @property
+    def group_name(self):
+        if self.group:
+            return str(self.group)
+        return None
+
+    @property
     def bbox(self):
         return [self.bbox_x0, self.bbox_x1, self.bbox_y0, self.bbox_y1, self.srid]
 
@@ -591,6 +612,8 @@ class ResourceBase(PolymorphicModel, PermissionLevelMixin, ItemBase):
     @property
     def license_light(self):
         a = []
+        if not self.license:
+            return ''
         if (not (self.license.name is None)) and (len(self.license.name) > 0):
             a.append(self.license.name)
         if (not (self.license.url is None)) and (len(self.license.url) > 0):
@@ -607,6 +630,36 @@ class ResourceBase(PolymorphicModel, PermissionLevelMixin, ItemBase):
         if (not (self.license.url is None)) and (len(self.license.url) > 0):
                 a.append("("+self.license.url+")")
         return " ".join(a)
+
+    @property
+    def metadata_completeness(self):
+        required_fields = [
+            'abstract',
+            'category',
+            'data_quality_statement',
+            'date',
+            'date_type',
+            'language',
+            'license',
+            'regions',
+            'title']
+        if self.restriction_code_type == 'otherRestrictions':
+            required_fields.append('constraints_other')
+        filled_fields = []
+        for required_field in required_fields:
+            field = getattr(self, required_field, None)
+            if field:
+                if required_field is 'license':
+                    if field.name is 'Not Specified':
+                        continue
+                if required_field is 'regions':
+                    if not field.all():
+                        continue
+                if required_field is 'category':
+                    if not field.identifier:
+                        continue
+                filled_fields.append(field)
+        return '{}%'.format(len(filled_fields) * 100 / len(required_fields))
 
     def keyword_list(self):
         return [kw.name for kw in self.keywords.all()]
@@ -891,6 +944,11 @@ class ResourceBase(PolymorphicModel, PermissionLevelMixin, ItemBase):
             the_ma = None
         return the_ma
 
+    def handle_moderated_uploads(self):
+        if settings.ADMIN_MODERATE_UPLOADS:
+            self.is_published = False
+            self.save()
+
     metadata_author = property(_get_metadata_author, _set_metadata_author)
 
     objects = ResourceBaseManager()
@@ -966,15 +1024,6 @@ def resourcebase_post_save(instance, *args, **kwargs):
     Used to fill any additional fields after the save.
     Has to be called by the children
     """
-    if not instance.id:
-        return
-
-    ResourceBase.objects.filter(id=instance.id).update(
-        thumbnail_url=instance.get_thumbnail_url(),
-        detail_url=instance.get_absolute_url(),
-        csw_insert_date=datetime.datetime.now())
-    instance.set_missing_info()
-
     # we need to remove stale links
     for link in instance.link_set.all():
         if link.name == "External Document":
@@ -983,6 +1032,81 @@ def resourcebase_post_save(instance, *args, **kwargs):
         else:
             if urlsplit(settings.SITEURL).hostname not in link.url:
                 link.delete()
+
+    try:
+        ResourceBase.objects.filter(id=instance.id).update(
+            thumbnail_url=instance.get_thumbnail_url(),
+            detail_url=instance.get_absolute_url(),
+            csw_insert_date=datetime.datetime.now())
+    except:
+        pass
+
+    try:
+        instance.thumbnail_url = instance.get_thumbnail_url()
+        instance.detail_url = instance.get_absolute_url()
+        instance.csw_insert_date = datetime.datetime.now()
+    finally:
+        instance.set_missing_info()
+
+    try:
+        if instance.regions and instance.regions.all():
+            """
+            try:
+                queryset = instance.regions.all().order_by('name')
+                for region in queryset:
+                    print ("%s : %s" % (region.name, region.geographic_bounding_box))
+            except:
+                tb = traceback.format_exc()
+            else:
+                tb = None
+            finally:
+                if tb:
+                    logger.debug(tb)
+            """
+            pass
+        else:
+            srid1, wkt1 = instance.geographic_bounding_box.split(";")
+            srid1 = re.findall(r'\d+', srid1)
+
+            poly1 = GEOSGeometry(wkt1, srid=int(srid1[0]))
+            poly1.transform(4326)
+
+            queryset = Region.objects.all().order_by('name')
+            global_regions = []
+            regions_to_add = []
+            for region in queryset:
+                try:
+                    srid2, wkt2 = region.geographic_bounding_box.split(";")
+                    srid2 = re.findall(r'\d+', srid2)
+
+                    poly2 = GEOSGeometry(wkt2, srid=int(srid2[0]))
+                    poly2.transform(4326)
+
+                    if poly2.intersection(poly1):
+                        regions_to_add.append(region)
+                    if region.level == 0 and region.parent is None:
+                        global_regions.append(region)
+                except:
+                    tb = traceback.format_exc()
+                    if tb:
+                        logger.debug(tb)
+            if regions_to_add or global_regions:
+                if regions_to_add and len(regions_to_add) > 0 and len(regions_to_add) <= 30:
+                    instance.regions.add(*regions_to_add)
+                else:
+                    instance.regions.add(*global_regions)
+    except:
+        tb = traceback.format_exc()
+        if tb:
+            logger.debug(tb)
+
+    # set default License if no specified
+    if instance.license is None:
+        no_license = License.objects.filter(name="Not Specified")
+
+        if no_license and len(no_license) > 0:
+            instance.license = no_license[0]
+            instance.save()
 
 
 def rating_post_save(instance, *args, **kwargs):
@@ -1100,9 +1224,11 @@ def do_logout(sender, user, request, **kwargs):
         gs_request = urllib2.Request(url, data, header_params)
 
         try:
-            urllib2.urlopen(gs_request).open()
+            urllib2.urlopen(gs_request)
         except:
-            pass
+            tb = traceback.format_exc()
+            if tb:
+                logger.debug(tb)
 
         if 'access_token' in request.session:
             del request.session['access_token']

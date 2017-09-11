@@ -126,6 +126,8 @@ types = [
              auxillary_file_exts=('dbf', 'shx', 'prj')),
     FileType("GeoTIFF", "tif", raster,
              aliases=('tiff', 'geotif', 'geotiff')),
+    FileType("ASCII Text File", "asc", raster,
+             auxillary_file_exts=('prj')),
     # requires geoserver importer extension
     FileType("PNG", "png", raster,
              auxillary_file_exts=('prj')),
@@ -207,6 +209,13 @@ def _find_file_type(file_names, extension):
     return filter(lambda f: f.lower().endswith(extension), file_names)
 
 
+def clean_macosx_dir(file_names):
+    """
+    Returns the files sans anything in a __MACOSX directory
+    """
+    return [f for f in file_names if '__MACOSX' not in f]
+
+
 def scan_file(file_name):
     '''get a list of SpatialFiles for the provided file'''
 
@@ -223,6 +232,7 @@ def scan_file(file_name):
         try:
             zf = zipfile.ZipFile(file_name, 'r')
             files = zf.namelist()
+            files = clean_macosx_dir(files)
             if _contains_bad_names(files):
                 zf.extractall(dirname)
                 files = None

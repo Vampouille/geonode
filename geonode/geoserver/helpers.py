@@ -245,7 +245,7 @@ def fixup_style(cat, resource, style):
 def cascading_delete(cat, layer_name):
     resource = None
     try:
-        if layer_name.find(':') != -1:
+        if layer_name.find(':') != -1 and len(layer_name.split(':')) == 2:
             workspace, name = layer_name.split(':')
             ws = cat.get_workspace(workspace)
             try:
@@ -308,7 +308,9 @@ def cascading_delete(cat, layer_name):
         try:
             cat.delete(resource, recurse=True)  # This may fail
         except:
-            cat.reload()  # this preservers the integrity of geoserver
+            cat._cache.clear()
+            cat.reset()
+        #    cat.reload()  # this preservers the integrity of geoserver
 
         if store.resource_type == 'dataStore' and 'dbtype' in store.connection_parameters and \
                 store.connection_parameters['dbtype'] == 'postgis':
@@ -323,7 +325,7 @@ def cascading_delete(cat, layer_name):
                     logger.info(" - Going to purge the " + store.resource_type + " : " + store.href)
                     cat.reset()  # this resets the coverage readers and unlocks the files
                     cat.delete(store, purge='all', recurse=True)
-                    cat.reload()  # this preservers the integrity of geoserver
+                    # cat.reload()  # this preservers the integrity of geoserver
                 except FailedRequestError as e:
                     # Trying to recursively purge a store may fail
                     # We'll catch the exception and log it.
@@ -441,7 +443,7 @@ def gs_slurp(
         resources = [k for k in resources if k.advertised in ["true", True]]
 
     # filter out layers already registered in geonode
-    layer_names = Layer.objects.all().values_list('typename', flat=True)
+    layer_names = Layer.objects.all().values_list('alternate', flat=True)
     if skip_geonode_registered:
         resources = [k for k in resources
                      if not '%s:%s' % (k.workspace.name, k.name) in layer_names]
@@ -474,7 +476,7 @@ def gs_slurp(
                 "workspace": workspace.name,
                 "store": the_store.name,
                 "storeType": the_store.resource_type,
-                "typename": "%s:%s" % (workspace.name.encode('utf-8'), resource.name.encode('utf-8')),
+                "alternate": "%s:%s" % (workspace.name.encode('utf-8'), resource.name.encode('utf-8')),
                 "title": resource.title or 'No title provided',
                 "abstract": resource.abstract or unicode(_('No abstract provided')).encode('utf-8'),
                 "owner": owner,
@@ -664,7 +666,7 @@ def set_attributes_from_geoserver(layer, overwrite=False):
     server_url = ogc_server_settings.LOCATION if layer.storeType != "remoteStore" else layer.service.base_url
 
     if layer.storeType == "remoteStore" and layer.service.ptype == "gxp_arcrestsource":
-        dft_url = server_url + ("%s?f=json" % layer.typename)
+        dft_url = server_url + ("%s?f=json" % layer.alternate)
         try:
             # The code below will fail if http_client cannot be imported
             body = json.loads(http_client.request(dft_url)[1])
@@ -679,7 +681,7 @@ def set_attributes_from_geoserver(layer, overwrite=False):
                          server_url) + "wfs?" + urllib.urlencode({"service": "wfs",
                                                                   "version": "1.0.0",
                                                                   "request": "DescribeFeatureType",
-                                                                  "typename": layer.typename.encode('utf-8'),
+                                                                  "typename": layer.alternate.encode('utf-8'),
                                                                   })
         try:
             # The code below will fail if http_client cannot be imported  or
@@ -699,8 +701,8 @@ def set_attributes_from_geoserver(layer, overwrite=False):
                 "version": "1.0.0",
                 "request": "GetFeatureInfo",
                 "bbox": ','.join([str(x) for x in layer.bbox]),
-                "LAYERS": layer.typename.encode('utf-8'),
-                "QUERY_LAYERS": layer.typename.encode('utf-8'),
+                "LAYERS": layer.alternate.encode('utf-8'),
+                "QUERY_LAYERS": layer.alternate.encode('utf-8'),
                 "feature_count": 1,
                 "width": 1,
                 "height": 1,
@@ -726,7 +728,7 @@ def set_attributes_from_geoserver(layer, overwrite=False):
             "service": "wcs",
             "version": "1.1.0",
             "request": "DescribeCoverage",
-            "identifiers": layer.typename.encode('utf-8')
+            "identifiers": layer.alternate.encode('utf-8')
         })
         try:
             response, body = http_client.request(dc_url)
@@ -751,7 +753,7 @@ def set_attributes_from_geoserver(layer, overwrite=False):
                         field,
                         ftype):
                     logger.debug("Generating layer attribute statistics")
-                    result = get_attribute_statistics(layer.name, field)
+                    result = get_attribute_statistics(layer.alternate, field)
                 else:
                     result = None
                 attribute_stats[layer.name][field] = result
@@ -1206,8 +1208,10 @@ def geoserver_upload(
             logger.warn(msg)
             e.args = (msg,)
 
-            style = cat.get_style(name)
-            if style is None:
+        if style is None:
+            try:
+                style = cat.get_style(name)
+            except:
                 try:
                     cat.create_style(name + '_layer', sld)
                 except geoserver.catalog.ConflictingDataError as e:
@@ -1223,18 +1227,19 @@ def geoserver_upload(
                            'for Layer: "%s"' % (name))
                     logger.error(msg)
 
-        # FIXME: Should we use the fully qualified typename?
-        publishing.default_style = style
-        cat.save(publishing)
+        if style:
+            publishing.default_style = style
+            logger.info('default style set to %s', name)
+            cat.save(publishing)
 
     # Step 10. Create the Django record for the layer
     logger.info('>>> Step 10. Creating Django record for [%s]', name)
     # FIXME: Do this inside the layer object
-    typename = workspace.name + ':' + gs_resource.name
+    alternate = workspace.name + ':' + gs_resource.name
     layer_uuid = str(uuid.uuid1())
     defaults = dict(store=gs_resource.store.name,
                     storeType=gs_resource.store.resource_type,
-                    typename=typename,
+                    alternate=alternate,
                     title=title or gs_resource.title,
                     uuid=layer_uuid,
                     abstract=abstract or gs_resource.abstract or '',
@@ -1447,7 +1452,7 @@ def wps_execute_layer_attribute_statistics(layer_name, field):
     # return a proper wps:ExecuteResponse
 
     request = render_to_string('layers/wps_execute_gs_aggregate.xml', {
-                               'layer_name': 'geonode:%s' % layer_name,
+                               'layer_name': layer_name,
                                'field': field
                                })
     response = http_post(
@@ -1556,7 +1561,7 @@ def style_update(request, url):
         if request.method == 'POST':
             style = Style(name=style_name, sld_body=sld_body, sld_url=url)
             style.save()
-            layer = Layer.objects.get(typename=layer_name)
+            layer = Layer.objects.get(alternate=layer_name)
             style.layer_styles.add(layer)
             style.save()
             affected_layers.append(layer)
@@ -1788,11 +1793,18 @@ def create_gs_thumbnail(instance, overwrite=False):
                 local_layers.append(layer.name)
         layers = ",".join(local_layers).encode('utf-8')
     else:
-        layers = instance.typename.encode('utf-8')
+        layers = instance.alternate.encode('utf-8')
+
+    wms_endpoint = getattr(ogc_server_settings, "WMS_ENDPOINT") or 'wms'
+    wms_version = getattr(ogc_server_settings, "WMS_VERSION") or '1.1.1'
+    wms_format = getattr(ogc_server_settings, "WMS_FORMAT") or 'image/png8'
 
     params = {
+        'service': 'WMS',
+        'version': wms_version,
+        'request': 'GetMap',
         'layers': layers,
-        'format': 'image/png8',
+        'format': wms_format,
         'width': 200,
         'height': 150,
         'TIME': '-99999999999-01-01T00:00:00.0Z/99999999999-01-01T00:00:00.0Z'
@@ -1810,11 +1822,11 @@ def create_gs_thumbnail(instance, overwrite=False):
     # with the WMS parser.
     p = "&".join("%s=%s" % item for item in params.items())
 
-    thumbnail_remote_url = ogc_server_settings.PUBLIC_LOCATION + \
-        "wms/reflect?" + p
+    import posixpath
 
-    thumbnail_create_url = ogc_server_settings.LOCATION + \
-        "wms/reflect?" + p
+    thumbnail_remote_url = posixpath.join(ogc_server_settings.PUBLIC_LOCATION, wms_endpoint) + "?" + p
+
+    thumbnail_create_url = posixpath.join(ogc_server_settings.LOCATION, wms_endpoint) + "?" + p
 
     create_thumbnail(instance, thumbnail_remote_url, thumbnail_create_url,
                      ogc_client=http_client, overwrite=overwrite, check_bbox=check_bbox)

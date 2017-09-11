@@ -21,6 +21,7 @@
 import json
 import time
 
+from django.db.models import Q
 from django.conf.urls import url
 from django.contrib.auth import get_user_model
 from django.core.urlresolvers import reverse
@@ -41,13 +42,13 @@ from geonode.base.models import ThesaurusKeywordLabel
 from geonode.layers.models import Layer
 from geonode.maps.models import Map
 from geonode.documents.models import Document
-from geonode.groups.models import GroupProfile
-
+from geonode.groups.models import GroupProfile, GroupCategory
+from django.contrib.auth.models import Group
 from django.core.serializers.json import DjangoJSONEncoder
 from tastypie.serializers import Serializer
 from tastypie import fields
 from tastypie.resources import ModelResource
-from tastypie.constants import ALL
+from tastypie.constants import ALL, ALL_WITH_RELATIONS
 from tastypie.utils import trailing_slash
 
 
@@ -228,6 +229,51 @@ class RegionResource(TypeFilteredResource):
 
 class TopicCategoryResource(TypeFilteredResource):
     """Category api"""
+    layers_count = fields.IntegerField(default=0)
+
+    def dehydrate_layers_count(self, bundle):
+        request = bundle.request
+        obj_with_perms = get_objects_for_user(request.user,
+                                              'base.view_resourcebase').instance_of(Layer)
+        filter_set = bundle.obj.resourcebase_set.filter(id__in=obj_with_perms.values('id'))
+
+        if not settings.SKIP_PERMS_FILTER:
+            is_admin = False
+            is_staff = False
+            if request.user:
+                is_admin = request.user.is_superuser if request.user else False
+                is_staff = request.user.is_staff if request.user else False
+
+            # Get the list of objects the user has access to
+            if settings.ADMIN_MODERATE_UPLOADS:
+                if not is_admin and not is_staff:
+                    filter_set = filter_set.filter(is_published=True)
+
+            if settings.RESOURCE_PUBLISHING:
+                filter_set = filter_set.filter(is_published=True)
+
+            try:
+                anonymous_group = Group.objects.get(name='anonymous')
+            except:
+                anonymous_group = None
+
+            if settings.GROUP_PRIVATE_RESOURCES:
+                if is_admin:
+                    filter_set = filter_set
+                elif request.user:
+                    groups = request.user.groups.all()
+                    if anonymous_group:
+                        filter_set = filter_set.filter(
+                            Q(group__isnull=True) | Q(group__in=groups) | Q(group=anonymous_group))
+                    else:
+                        filter_set = filter_set.filter(Q(group__isnull=True) | Q(group__in=groups))
+                else:
+                    if anonymous_group:
+                        filter_set = filter_set.filter(Q(group__isnull=True) | Q(group=anonymous_group))
+                    else:
+                        filter_set = filter_set.filter(Q(group__isnull=True))
+
+        return filter_set.distinct().count()
 
     def serialize(self, request, data, format, options=None):
         if options is None:
@@ -246,12 +292,31 @@ class TopicCategoryResource(TypeFilteredResource):
         serializer = CountJSONSerializer()
 
 
+class GroupCategoryResource(TypeFilteredResource):
+    detail_url = fields.CharField()
+    member_count = fields.IntegerField()
+
+    class Meta:
+        queryset = GroupCategory.objects.all()
+        allowed_methods = ['get']
+        include_resource_uri = False
+        fields = ['name', 'slug']
+        filtering = {'slug': ALL,
+                     'name': ALL}
+
+    def dehydrate_detail_url(self, bundle):
+        return bundle.obj.get_absolute_url()
+
+    def dehydrate_member_count(self, bundle):
+        return bundle.obj.groups.all().count()
+
+
 class GroupResource(ModelResource):
     """Groups api"""
-
     detail_url = fields.CharField()
     member_count = fields.IntegerField()
     manager_count = fields.IntegerField()
+    categories = fields.ToManyField(GroupCategoryResource, 'categories', full=True)
 
     def dehydrate_member_count(self, bundle):
         return bundle.obj.member_queryset().count()
@@ -267,14 +332,14 @@ class GroupResource(ModelResource):
         resource_name = 'groups'
         allowed_methods = ['get']
         filtering = {
-            'title': ALL
+            'title': ALL,
+            'categories': ALL_WITH_RELATIONS,
         }
         ordering = ['title', 'last_modified']
 
 
 class ProfileResource(TypeFilteredResource):
     """Profile api"""
-
     avatar_100 = fields.CharField(null=True)
     profile_detail_url = fields.CharField()
     email = fields.CharField(default='')

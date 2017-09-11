@@ -22,6 +22,8 @@ import unicodecsv as csv
 import json
 
 import datetime
+from itertools import chain
+
 from guardian.shortcuts import get_perms
 
 from django.shortcuts import render_to_response, get_object_or_404
@@ -41,11 +43,13 @@ from geonode.utils import resolve_object
 from geonode.security.views import _perms_info_json
 from geonode.people.forms import ProfileForm
 from geonode.base.forms import CategoryForm
-from geonode.base.models import TopicCategory, ResourceBase
-from geonode.documents.models import Document
+from geonode.base.models import TopicCategory
+from geonode.documents.models import Document, get_related_resources
 from geonode.documents.forms import DocumentForm, DocumentCreateForm, DocumentReplaceForm
 from geonode.documents.models import IMGTYPES
 from geonode.utils import build_social_links
+from geonode.groups.models import GroupProfile
+from geonode.base.views import batch_modify
 
 ALLOWED_DOC_TYPES = settings.ALLOWED_DOCUMENT_TYPES
 
@@ -100,11 +104,7 @@ def document_detail(request, docid):
         )
 
     else:
-        try:
-            related = document.content_type.get_object_for_this_type(
-                id=document.object_id)
-        except:
-            related = ''
+        related = get_related_resources(document)
 
         # Update count for popularity ranking,
         # but do not includes admins or resource owners
@@ -161,24 +161,36 @@ class DocumentUploadView(CreateView):
         context['ALLOWED_DOC_TYPES'] = ALLOWED_DOC_TYPES
         return context
 
+    def form_invalid(self, form):
+        if self.request.REQUEST.get('no__redirect', False):
+            out = {'success': False}
+            out['message'] = ""
+            status_code = 400
+            return HttpResponse(
+                json.dumps(out),
+                content_type='application/json',
+                status=status_code)
+        else:
+            form.name = None
+            form.title = None
+            form.doc_file = None
+            form.doc_url = None
+            return self.render_to_response(self.get_context_data(form=form))
+
     def form_valid(self, form):
         """
         If the form is valid, save the associated model.
         """
         self.object = form.save(commit=False)
         self.object.owner = self.request.user
-        resource_id = self.request.POST.get('resource', None)
-        if resource_id:
-            self.object.content_type = ResourceBase.objects.get(id=resource_id).polymorphic_ctype
-            self.object.object_id = resource_id
         # by default, if RESOURCE_PUBLISHING=True then document.is_published
         # must be set to False
-        is_published = True
-        if settings.RESOURCE_PUBLISHING:
-            is_published = False
+        # RESOURCE_PUBLISHING works in similar way as ADMIN_MODERATE_UPLOADS,
+        # but is applied to documents only. ADMIN_MODERATE_UPLOADS has wider usage
+        is_published = not (settings.RESOURCE_PUBLISHING or settings.ADMIN_MODERATE_UPLOADS)
         self.object.is_published = is_published
-
         self.object.save()
+        form.save_many2many()
         self.object.set_permissions(form.cleaned_data['permissions'])
 
         abstract = None
@@ -186,6 +198,8 @@ class DocumentUploadView(CreateView):
         regions = []
         keywords = []
         bbox = None
+
+        out = {'success': False}
 
         if getattr(settings, 'EXIF_ENABLED', False):
             try:
@@ -239,12 +253,28 @@ class DocumentUploadView(CreateView):
             except:
                 print "Could not send slack message for new document."
 
-        return HttpResponseRedirect(
-            reverse(
-                'document_metadata',
+        if self.request.REQUEST.get('no__redirect', False):
+            out['success'] = True
+            out['url'] = reverse(
+                'document_detail',
                 args=(
                     self.object.id,
-                )))
+                ))
+            if out['success']:
+                status_code = 200
+            else:
+                status_code = 400
+            return HttpResponse(
+                json.dumps(out),
+                content_type='application/json',
+                status=status_code)
+        else:
+            return HttpResponseRedirect(
+                reverse(
+                    'document_metadata',
+                    args=(
+                        self.object.id,
+                    )))
 
 
 class DocumentUpdateView(UpdateView):
@@ -373,6 +403,7 @@ def document_metadata(
                 the_document.poc = new_poc
                 the_document.metadata_author = new_author
                 the_document.keywords.add(*new_keywords)
+                document_form.save_many2many()
                 Document.objects.filter(id=the_document.id).update(category=new_category)
 
                 if getattr(settings, 'SLACK_ENABLED', False):
@@ -399,13 +430,31 @@ def document_metadata(
             author_form = ProfileForm(prefix="author")
             author_form.hidden = True
 
+        metadata_author_groups = []
+        if request.user.is_superuser:
+            metadata_author_groups = GroupProfile.objects.all()
+        else:
+            metadata_author_groups = chain(
+                metadata_author.group_list_all(), GroupProfile.objects.exclude(access="private"))
+
         return render_to_response(template, RequestContext(request, {
+            "resource": document,
             "document": document,
             "document_form": document_form,
             "poc_form": poc_form,
             "author_form": author_form,
             "category_form": category_form,
+            "metadata_author_groups": metadata_author_groups,
+            "GROUP_MANDATORY_RESOURCES": getattr(settings, 'GROUP_MANDATORY_RESOURCES', False),
         }))
+
+
+@login_required
+def document_metadata_advanced(request, docid):
+    return document_metadata(
+            request,
+            docid,
+            template='documents/document_metadata_advanced.html')
 
 
 def document_search_page(request):
@@ -536,3 +585,7 @@ def document_list(request):
                          document.abstract
                          ])
     return response
+
+@login_required
+def document_batch_metadata(request, ids):
+    return batch_modify(request, ids, 'Document')

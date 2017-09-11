@@ -306,7 +306,7 @@ class GeoNodeMapTest(TestCase):
 
         self.assertEqual(
             uploaded.title,
-            'Air_Runways',
+            'Air Runways',
             'Expected specific title from uploaded layer XML metadata')
 
         self.assertEqual(
@@ -326,11 +326,11 @@ class GeoNodeMapTest(TestCase):
                          'from uploaded layer XML metadata')
 
         self.assertEqual(len(uploaded.keyword_list(
-        )), 5, 'Expected specific number of keywords from uploaded layer XML metadata')
+        )), 7, 'Expected specific number of keywords from uploaded layer XML metadata')
 
-        self.assertEqual(uploaded.keyword_csv,
-                         u'Airport,Airports,Landing Strips,Runway,Runways',
-                         'Expected CSV of keywords from uploaded layer XML metadata')
+        self.assertTrue(
+             u'Airport,Airports,Landing Strips,Runway,Runways' in uploaded.keyword_csv,
+             'Expected CSV of keywords from uploaded layer XML metadata')
 
         self.assertTrue(
             'Landing Strips' in uploaded.keyword_list(),
@@ -516,7 +516,7 @@ class GeoNodeMapTest(TestCase):
         styles = layer.styles + [layer.default_style]
 
         # Delete the Layer using cascading_delete()
-        cascading_delete(gs_cat, shp_layer.typename)
+        cascading_delete(gs_cat, shp_layer.alternate)
 
         # Verify that the styles were deleted
         for style in styles:
@@ -649,6 +649,31 @@ class GeoNodeMapTest(TestCase):
              'prj_file': layer_prj
              })
         self.assertEquals(response.status_code, 401)
+
+    def test_importlayer_mgmt_command(self):
+            """Test layer import management command
+            """
+            vector_file = os.path.join(
+                gisdata.VECTOR_DATA,
+                'san_andres_y_providencia_administrative.shp')
+
+            call_command('importlayers', vector_file, overwrite=True,
+                         keywords="test, import, san andreas",
+                         title="Test San Andres y Providencia Administrative",
+                         verbosity=1)
+
+            lyr = Layer.objects.get(title='Test San Andres y Providencia Administrative')
+            self.assertIsNotNone(lyr)
+            self.assertEqual(lyr.name, "test_san_andres_y_providencia_administrative")
+            self.assertEqual(lyr.title, "Test San Andres y Providencia Administrative")
+            self.assertEqual(
+                lyr.keyword_list(), [
+                    u'features',
+                    u'import',
+                    u'san andreas',
+                    u'test',
+                    u'test_san_andres_y_providencia_administrative'])
+            lyr.delete()
 
 
 class GeoNodePermissionsTest(TestCase):

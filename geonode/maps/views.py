@@ -20,7 +20,11 @@
 
 import math
 import logging
+import urlparse
+from itertools import chain
+
 from guardian.shortcuts import get_perms
+from guardian.utils import get_anonymous_user
 
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ObjectDoesNotExist
@@ -55,12 +59,14 @@ from geonode.security.views import _perms_info_json
 from geonode.base.forms import CategoryForm
 from geonode.base.models import TopicCategory
 from geonode.tasks.deletion import delete_map
+from geonode.groups.models import GroupProfile
 
 from geonode.documents.models import get_related_documents
 from geonode.people.forms import ProfileForm
 from geonode.utils import num_encode, num_decode
 from geonode.utils import build_social_links
-import urlparse
+from geonode.base.views import batch_modify
+
 
 if 'geonode.geoserver' in settings.INSTALLED_APPS:
     # FIXME: The post service providing the map_status object
@@ -254,13 +260,39 @@ def map_metadata(request, mapid, template='maps/map_metadata.html'):
             author_form = ProfileForm(prefix="author")
             author_form.hidden = True
 
+    if 'access_token' in request.session:
+        access_token = request.session['access_token']
+    else:
+        access_token = None
+
+    config = map_obj.viewer_json(request.user, access_token)
+    layers = MapLayer.objects.filter(map=map_obj.id)
+
+    metadata_author_groups = []
+    if request.user.is_superuser:
+        metadata_author_groups = GroupProfile.objects.all()
+    else:
+        metadata_author_groups = chain(metadata_author.group_list_all(), GroupProfile.objects.exclude(access="private"))
+
     return render_to_response(template, RequestContext(request, {
+        "config": json.dumps(config),
+        "resource": map_obj,
         "map": map_obj,
         "map_form": map_form,
         "poc_form": poc_form,
         "author_form": author_form,
         "category_form": category_form,
+        "layers": layers,
+        "preview":  getattr(settings, 'LAYER_PREVIEW_LIBRARY', 'leaflet'),
+        "crs":  getattr(settings, 'DEFAULT_MAP_CRS', 'EPSG:900913'),
+        "metadata_author_groups": metadata_author_groups,
+        "GROUP_MANDATORY_RESOURCES": getattr(settings, 'GROUP_MANDATORY_RESOURCES', False),
     }))
+
+
+@login_required
+def map_metadata_advanced(request, mapid):
+    return map_metadata(request, mapid, template='maps/map_metadata_advanced.html')
 
 
 @login_required
@@ -500,7 +532,7 @@ def new_map_json(request):
                       center_x=0, center_y=0)
         map_obj.save()
         map_obj.set_default_permissions()
-
+        map_obj.handle_moderated_uploads()
         # If the body has been read already, use an empty string.
         # See https://github.com/django/django/commit/58d555caf527d6f1bdfeab14527484e4cca68648
         # for a better exception to catch when we move to Django 1.7.
@@ -553,6 +585,7 @@ def new_map_config(request):
             map_obj.owner = request.user
 
         config = map_obj.viewer_json(request.user, access_token)
+        map_obj.handle_moderated_uploads()
         del config['id']
     else:
         if request.method == 'GET':
@@ -566,6 +599,12 @@ def new_map_config(request):
             bbox = None
             map_obj = Map(projection=getattr(settings, 'DEFAULT_MAP_CRS',
                           'EPSG:900913'))
+
+            if request.user.is_authenticated():
+                map_obj.owner = request.user
+            else:
+                map_obj.owner = get_anonymous_user()
+
             layers = []
             for layer_name in params.getlist('layer'):
                 try:
@@ -612,7 +651,7 @@ def new_map_config(request):
                     else:
                         url = service.base_url
                     maplayer = MapLayer(map=map_obj,
-                                        name=layer.typename,
+                                        name=layer.alternate,
                                         ows_url=layer.ows_url,
                                         layer_params=json.dumps(config),
                                         visibility=True,
@@ -631,7 +670,7 @@ def new_map_config(request):
                         url = layer.ows_url
                     maplayer = MapLayer(
                         map=map_obj,
-                        name=layer.typename,
+                        name=layer.alternate,
                         ows_url=url,
                         # use DjangoJSONEncoder to handle Decimal values
                         layer_params=json.dumps(config, cls=DjangoJSONEncoder),
@@ -673,6 +712,7 @@ def new_map_config(request):
                 map_obj.center_y = center[1]
                 map_obj.zoom = math.ceil(min(width_zoom, height_zoom))
 
+            map_obj.handle_moderated_uploads()
             config = map_obj.viewer_json(
                 request.user, access_token, *(DEFAULT_BASE_LAYERS + layers))
             config['fromLayer'] = True
@@ -734,7 +774,7 @@ def map_download(request, mapid, template='maps/map_download.html'):
             if not lyr.local:
                 remote_layers.append(lyr)
             else:
-                ownable_layer = Layer.objects.get(typename=lyr.name)
+                ownable_layer = Layer.objects.get(alternate=lyr.name)
                 if not request.user.has_perm(
                         'download_resourcebase',
                         obj=ownable_layer.get_self_resource()):
@@ -827,7 +867,7 @@ def map_wms(request, mapid):
 
 def maplayer_attributes(request, layername):
     # Return custom layer attribute labels/order in JSON format
-    layer = Layer.objects.get(typename=layername)
+    layer = Layer.objects.get(alternate=layername)
     return HttpResponse(
         json.dumps(
             layer.attribute_config()),
@@ -1000,3 +1040,8 @@ def map_metadata_detail(request, mapid, template='maps/map_metadata_detail.html'
         "resource": map_obj,
         'SITEURL': settings.SITEURL[:-1]
     }))
+
+
+@login_required
+def map_batch_metadata(request, ids):
+    return batch_modify(request, ids, 'Map')

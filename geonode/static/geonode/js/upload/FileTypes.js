@@ -9,6 +9,11 @@ define(['./FileType'], function (FileType) {
             main: 'shp',
             requires: ['shp', 'prj', 'dbf', 'shx']
         });
+    file_types['ASCII'] = new FileType({
+            name: gettext('ASCII Text File'),
+            format: 'raster',
+            main: 'asc'
+        });
     file_types['TIF'] = new FileType({
             name: gettext('GeoTIFF'),
             format: 'raster',
@@ -136,6 +141,11 @@ define(['./FileType'], function (FileType) {
             name: gettext('MrSID-Multi-resolution Seamless Image Database'),
             format: 'raster',
             main: 'sid'
+        });
+    file_types['XML'] = new FileType({
+            name: gettext('XML Metadata File'),
+            format: 'metadata',
+            main: 'xml'
         });
     return file_types;
 });

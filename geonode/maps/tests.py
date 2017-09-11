@@ -18,6 +18,7 @@
 #
 #########################################################################
 
+from datetime import datetime
 from lxml import etree
 
 from django.core.urlresolvers import reverse
@@ -37,6 +38,41 @@ from geonode.maps.utils import fix_baselayers
 from geonode.utils import default_map_config
 from geonode.base.populate_test_data import create_models
 from geonode.maps.tests_populate_maplayers import create_maplayers
+from geonode.tests.utils import NotificationsTestsHelper
+from geonode.maps import MapsAppConfig
+from django.contrib.auth.models import Group
+from geonode.base.models import License, Region
+
+
+VIEWER_CONFIG = """
+{
+  "defaultSourceType": "gx_wmssource",
+  "about": {
+      "title": "Title",
+      "abstract": "Abstract"
+  },
+  "sources": {
+    "capra": {
+      "url":"http://localhost:8080/geoserver/wms"
+    }
+  },
+  "map": {
+    "projection":"EPSG:900913",
+    "units":"m",
+    "maxResolution":156543.0339,
+    "maxExtent":[-20037508.34,-20037508.34,20037508.34,20037508.34],
+    "center":[-9428760.8688778,1436891.8972581],
+    "layers":[{
+      "source":"capra",
+      "buffer":0,
+      "wms":"capra",
+      "name":"base:nic_admin"
+    }],
+    "keywords":["saving", "keywords"],
+    "zoom":7
+  }
+}
+"""
 
 
 class MapsTest(TestCase):
@@ -62,35 +98,7 @@ community."
 
     # This is a valid map viewer config, based on the sample data provided
     # by andreas in issue 566. -dwins
-    viewer_config = """
-    {
-      "defaultSourceType": "gx_wmssource",
-      "about": {
-          "title": "Title",
-          "abstract": "Abstract"
-      },
-      "sources": {
-        "capra": {
-          "url":"http://localhost:8080/geoserver/wms"
-        }
-      },
-      "map": {
-        "projection":"EPSG:900913",
-        "units":"m",
-        "maxResolution":156543.0339,
-        "maxExtent":[-20037508.34,-20037508.34,20037508.34,20037508.34],
-        "center":[-9428760.8688778,1436891.8972581],
-        "layers":[{
-          "source":"capra",
-          "buffer":0,
-          "wms":"capra",
-          "name":"base:nic_admin"
-        }],
-        "keywords":["saving", "keywords"],
-        "zoom":7
-      }
-    }
-    """
+    viewer_config = VIEWER_CONFIG
 
     viewer_config_alternative = """
     {
@@ -271,11 +279,11 @@ community."
 
     def test_new_map_with_layer(self):
         layer = Layer.objects.all()[0]
-        self.client.get(reverse('new_map') + '?layer=' + layer.typename)
+        self.client.get(reverse('new_map') + '?layer=' + layer.alternate)
 
     def test_new_map_with_empty_bbox_layer(self):
         layer = Layer.objects.all()[0]
-        self.client.get(reverse('new_map') + '?layer=' + layer.typename)
+        self.client.get(reverse('new_map') + '?layer=' + layer.alternate)
 
     def test_ajax_map_permissions(self):
         """Verify that the ajax_layer_permissions view is behaving as expected
@@ -288,7 +296,7 @@ community."
         def url(id):
             return reverse('resource_permissions', args=[id])
 
-        # Test that an invalid layer.typename is handled for properly
+        # Test that an invalid layer.alternate is handled for properly
         response = self.client.post(
             url(invalid_mapid),
             data=json.dumps(self.perm_spec),
@@ -528,7 +536,7 @@ community."
         # Test successful new map creation
         m = Map()
         admin_user = get_user_model().objects.get(username='admin')
-        layer_name = Layer.objects.all()[0].typename
+        layer_name = Layer.objects.all()[0].alternate
         m.create_from_layer_list(admin_user, [layer_name], "title", "abstract")
         map_id = m.id
 
@@ -631,3 +639,171 @@ community."
         fix_baselayers(map_id)
 
         self.assertEquals(map_obj.layer_set.all().count(), n_baselayers + n_locallayers)
+
+    def test_batch_edit(self):
+        Model = Map
+        view = 'map_batch_metadata'
+        resources = Model.objects.all()[:3]
+        ids = ','.join([str(element.pk) for element in resources])
+        # test non-admin access
+        self.client.login(username="bobby", password="bob")
+        response = self.client.get(reverse(view, args=(ids,)))
+        self.assertEquals(response.status_code, 401)
+        # test group change
+        group = Group.objects.first()
+        self.client.login(username='admin', password='admin')
+        response = self.client.post(
+            reverse(view, args=(ids,)),
+            data={'group': group.pk},
+        )
+        self.assertEquals(response.status_code, 302)
+        resources = Model.objects.filter(id__in=[r.pk for r in resources])
+        for resource in resources:
+            self.assertEquals(resource.group, group)
+        # test owner change
+        owner = get_user_model().objects.first()
+        response = self.client.post(
+            reverse(view, args=(ids,)),
+            data={'owner': owner.pk},
+        )
+        self.assertEquals(response.status_code, 302)
+        resources = Model.objects.filter(id__in=[r.pk for r in resources])
+        for resource in resources:
+            self.assertEquals(resource.owner, owner)
+        # test license change
+        license = License.objects.first()
+        response = self.client.post(
+            reverse(view, args=(ids,)),
+            data={'license': license.pk},
+        )
+        self.assertEquals(response.status_code, 302)
+        resources = Model.objects.filter(id__in=[r.pk for r in resources])
+        for resource in resources:
+            self.assertEquals(resource.license, license)
+        # test regions change
+        region = Region.objects.first()
+        response = self.client.post(
+            reverse(view, args=(ids,)),
+            data={'region': region.pk},
+        )
+        self.assertEquals(response.status_code, 302)
+        resources = Model.objects.filter(id__in=[r.pk for r in resources])
+        for resource in resources:
+            self.assertTrue(region in resource.regions.all())
+        # test date change
+        date = datetime.now()
+        response = self.client.post(
+            reverse(view, args=(ids,)),
+            data={'date': date},
+        )
+        self.assertEquals(response.status_code, 302)
+        resources = Model.objects.filter(id__in=[r.pk for r in resources])
+        for resource in resources:
+            self.assertEquals(resource.date, date)
+        # test language change
+        language = 'eng'
+        response = self.client.post(
+            reverse(view, args=(ids,)),
+            data={'language': language},
+        )
+        self.assertEquals(response.status_code, 302)
+        resources = Model.objects.filter(id__in=[r.pk for r in resources])
+        for resource in resources:
+            self.assertEquals(resource.language, language)
+        # test keywords change
+        keywords = 'some,thing,new'
+        response = self.client.post(
+            reverse(view, args=(ids,)),
+            data={'keywords': keywords},
+        )
+        self.assertEquals(response.status_code, 302)
+        resources = Model.objects.filter(id__in=[r.pk for r in resources])
+        for resource in resources:
+            for word in resource.keywords.all():
+                self.assertTrue(word.name in keywords.split(','))
+
+
+class MapModerationTestCase(TestCase):
+
+    fixtures = ['initial_data.json', 'bobby']
+
+    def setUp(self):
+        super(MapModerationTestCase, self).setUp()
+        self.user = 'admin'
+        self.passwd = 'admin'
+        create_models(type='layer')
+        create_models(type='map')
+        self.u = get_user_model().objects.get(username=self.user)
+        self.u.email = 'test@email.com'
+        self.u.is_active = True
+        self.u.save()
+
+    def test_moderated_upload(self):
+        """
+        Test if moderation flag works
+        """
+        with self.settings(ADMIN_MODERATE_UPLOADS=False):
+            self.client.login(username=self.user, password=self.passwd)
+            new_map = reverse('new_map_json')
+            response = self.client.post(new_map,
+                                        data=VIEWER_CONFIG,
+                                        content_type="text/json")
+            self.assertEquals(response.status_code, 200)
+            map_id = int(json.loads(response.content)['id'])
+            l = Map.objects.get(id=map_id)
+
+            self.assertTrue(l.is_published)
+
+        with self.settings(ADMIN_MODERATE_UPLOADS=True):
+            self.client.login(username=self.user, password=self.passwd)
+            new_map = reverse('new_map_json')
+            response = self.client.post(new_map,
+                                        data=VIEWER_CONFIG,
+                                        content_type="text/json")
+            self.assertEquals(response.status_code, 200)
+            map_id = int(json.loads(response.content)['id'])
+            l = Map.objects.get(id=map_id)
+
+            self.assertFalse(l.is_published)
+
+
+class MapsNotificationsTestCase(NotificationsTestsHelper):
+
+    fixtures = ['initial_data.json', 'bobby']
+
+    def setUp(self):
+        super(MapsNotificationsTestCase, self).setUp()
+        self.user = 'admin'
+        self.passwd = 'admin'
+        create_models(type='layer')
+        create_models(type='map')
+        self.u = get_user_model().objects.get(username=self.user)
+        self.u.email = 'test@email.com'
+        self.u.is_active = True
+        self.u.save()
+        self.setup_notifications_for(MapsAppConfig.NOTIFICATIONS, self.u)
+
+    def testMapsNotifications(self):
+        with self.settings(PINAX_NOTIFICATIONS_QUEUE_ALL=True):
+            self.clear_notifications_queue()
+            self.client.login(username=self.user, password=self.passwd)
+            new_map = reverse('new_map_json')
+            response = self.client.post(new_map,
+                                        data=VIEWER_CONFIG,
+                                        content_type="text/json")
+            self.assertEquals(response.status_code, 200)
+            map_id = int(json.loads(response.content)['id'])
+            l = Map.objects.get(id=map_id)
+            self.assertTrue(self.check_notification_out('map_created', self.u))
+            l.title = 'test notifications 2'
+            l.save()
+            self.assertTrue(self.check_notification_out('map_updated', self.u))
+
+            from dialogos.models import Comment
+            lct = ContentType.objects.get_for_model(l)
+            comment = Comment(author=self.u, name=self.u.username,
+                              content_type=lct, object_id=l.id,
+                              content_object=l, comment='test comment')
+            comment.save()
+
+            self.assertTrue(self.check_notification_out('map_comment', self.u))

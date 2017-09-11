@@ -1,4 +1,4 @@
-{% extends "site_base.html" %}
+{% extends "geonode_base.html" %}
 {% load i18n %}
 {% load staticfiles %}
 {% load base_tags %}
@@ -8,6 +8,7 @@
 {% block body_class %}home{% endblock %}
 
 {% block middle %}
+  {{ block.super }}
   {% block hero %}
   <div class="jumbotron">
   	<div class="container">
@@ -19,9 +20,6 @@
 		<p>{% blocktrans %}Open data to further your understanding of disaster risk{% endblocktrans %}</p>
   	</div>
   </div>
-  {% include "_status_message.html" %}
-  {% include "_announcements.html" %}
-  {% include "_messages.html" %}
   {% endblock %}
 
   {% block mainbody %}

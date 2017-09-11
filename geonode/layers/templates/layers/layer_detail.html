@@ -8,7 +8,7 @@
 {% load base_tags %}
 {% load guardian_tags %}
 
-{% block title %}{{ resource.title|default:resource.typename }} — {{ block.super }}{% endblock %}
+{% block title %}{{ resource.title|default:resource.alternate }} — {{ block.super }}{% endblock %}
 
 {% block head %}
 
@@ -37,7 +37,7 @@
 
 {% block body_outer %}
 <div class="page-header">
-  <h2 class="page-title">{{ resource.title|default:resource.typename }}</h2>
+  <h2 class="page-title">{{ resource.title|default:resource.alternate }}</h2>
 </div>
 
 <div class="row">
@@ -52,12 +52,11 @@
     </div>
 
     <div class="tab-content">
+      <article id="info" class="tab-pane{% if tab == 'info' or not tab %} active{% endif %}">
+        {% include "base/resourcebase_info_panel.html" %}
+      </article>
 
-    <article id="info" class="tab-pane active">
-    {% include "base/resourcebase_info_panel.html" %}
-    </article>
-
-     {% if resource.is_mosaic %}
+      {% if resource.is_mosaic %}
       <article id="granules" class="description tab-pane {% if tab and tab == 'granules' %}active{% endif %}">
         <div class="paginate-contents">
 
@@ -133,7 +132,7 @@
       </article>
      {% endif %}
 
-          <article id="attributes" class="tab-pane">
+      <article id="attributes" class="tab-pane">
         {% if resource.is_mosaic %}
             <table class="table table-striped table-bordered table-condensed">
               <thead>
@@ -175,7 +174,7 @@
               <tbody>
                 {% for attribute in resource.attributes %}
                   <tr>
-                    <td {% if attribute.attribute_label and attribute.attribute_label != attribute.attribute %}title="{{ attribute.attribute }}"{% endif %}>{{ attribute }}</td>
+                    <td>{{ attribute.attribute }}</td>
                     <td>{{ attribute.attribute_label|default:"" }}</td>
                     <td>{{ attribute.description|default:"" }}</td>
                     {% if wps_enabled %}
@@ -202,16 +201,18 @@
       </article>
 
       {% block social_links %}
-      {% if SOCIAL_BUTTONS %}
+      {% if DISPLAY_SOCIAL %}
         {% include "social_links.html" %}
       {% endif %}
       {% endblock %}
 
+      {% if DISPLAY_COMMENTS %}
       <article id="comments" class="tab-pane">
         {% with resource as obj %}
           {% include "_comments.html" %}
         {% endwith %}
       </article>
+      {% endif %}
 
       {% if GEOGIG_ENABLED and resource.link_set.geogig %}
         {% with "_geogig_layer_detail.html" as geogig_template %}
@@ -223,6 +224,7 @@
         {% endwith %}
       {% endif %}
 
+      {% if DISPLAY_RATINGS %}
       <article id="rate" class="tab-pane">
         <!-- TODO: Move this to a reusable template snippet -->
         {% if request.user.is_authenticated %}
@@ -235,6 +237,7 @@
         {% num_ratings resource as num_votes %}
         <div class="overall_rating" data-score="{{ layer_rating }}"></div> ({{num_votes}})
       </article>
+      {% endif %}
 
     </div>
 
@@ -309,7 +312,7 @@
     {% endif %}
 
     <li class="list-group-item">
-      <a href="{% url "layer_metadata_detail" resource.typename %}">
+      <a href="{% url "layer_metadata_detail" resource.alternate %}">
         <button class="btn btn-primary btn-md btn-block">{% trans "Metadata Detail" %}</button>
       </a>
     </li>
@@ -331,7 +334,9 @@
               <div class="col-sm-3">
                 <i class="fa fa-list-alt fa-3x"></i>
                 <h4>{% trans "Metadata" %}</h4>
-                <a class="btn btn-default btn-block btn-xs" href="{% url "layer_metadata" resource.service_typename %}">{% trans "Edit" %}</a>
+                <a class="btn btn-default btn-block btn-xs" href="{% url "layer_metadata" resource.service_typename %}">{% trans "Wizard" %}</a>
+                <a class="btn btn-default btn-block btn-xs" href="{% url "layer_metadata_advanced" resource.service_typename %}">{% trans "Advanced Edit" %}</a>
+                <a class="btn btn-default btn-block btn-xs" href="{% url "layer_metadata_upload" resource.service_typename %}">{% trans "Upload Metadata" %}</a>
               </div>
               {% endif %}
               {% if GEOSERVER_BASE_URL and not resource.service %}
@@ -341,8 +346,8 @@
                   <h4>{% trans "Styles" %}</h4>
                   {% if preview == 'geoext' %}
                   <a class="btn btn-default btn-block btn-xs style-edit" data-dismiss="modal" href="#">{% trans "Edit" %}</a>
-                  <a class="btn btn-default btn-block btn-xs" href="{% url "layer_style_manage" resource.service_typename %}">{% trans "Manage" %}</a>
                   {% endif %}
+                  <a class="btn btn-default btn-block btn-xs" href="{% url "layer_style_manage" resource.service_typename %}">{% trans "Manage" %}</a>
                 </div>
                 {% endif %}
               {% endif %}
@@ -571,10 +576,18 @@
     {% endif %}
         </script>
     <script type="text/javascript">
-      $('#set_thumbnail').click(function(){
-        createMapThumbnail();
-        $('#edit-layer').modal('toggle');
-      });
+    {% if preview == 'react' %}
+    $('#set_thumbnail').click(function(){
+      window.setThumbnail({{resource.id}})
+      $('#edit-layer').modal('toggle');
+    });
+    {% else %}
+    $('#set_thumbnail').click(function(){
+      createMapThumbnail();
+      $('#edit-layer').modal('toggle');
+    });
+    {% endif %}
+
     </script>
     {% if GEONODE_SECURITY_ENABLED %}
     {% include "_permissions_form_js.html" %}

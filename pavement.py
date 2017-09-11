@@ -214,6 +214,7 @@ def sync(options):
     """
     Run the migrate and migrate management commands to create and migrate a DB
     """
+    sh("python manage.py makemigrations --noinput")
     sh("python manage.py migrate --noinput")
     sh("python manage.py loaddata sample_admin.json")
     sh("python manage.py loaddata geonode/base/fixtures/default_oauth_apps.json")
@@ -401,7 +402,7 @@ def start_geoserver(options):
             javapath = 'START /B "" "' + javapath_opt + '"'
 
         sh((
-            '%(javapath)s -Xmx512m -XX:MaxPermSize=256m'
+            '%(javapath)s -Xms512m -Xmx1024m -server -XX:+UseConcMarkSweepGC -XX:MaxPermSize=256m'
             ' -DGEOSERVER_DATA_DIR=%(data_dir)s'
             # workaround for JAI sealed jar issue and jetty classloader
             ' -Dorg.eclipse.jetty.server.webapp.parentLoaderPriority=true'

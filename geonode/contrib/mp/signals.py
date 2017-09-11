@@ -43,7 +43,7 @@ def layer_post_save(instance, sender, **kwargs):
         tileset = Tileset.objects.create(
             name=instance.title,
             created_by=instance.owner.username,
-            layer_name=instance.typename,
+            layer_name=instance.alternate,
             bbox_x0=instance.bbox_x0,
             bbox_x1=instance.bbox_x1,
             bbox_y0=instance.bbox_y0,
@@ -61,8 +61,3 @@ def layer_post_save(instance, sender, **kwargs):
 
         if settings.CACHE_ON_LAYER_LOAD:
             tileset.seed()
-
-
-def layer_post_delete(instance, sender, **kwargs):
-    if Tileset.objects.filter(layer_uuid=instance.uuid).exists():
-        Tileset.objects.filter(layer_uuid=instance.uuid).delete()
