@@ -22,6 +22,7 @@ import re
 from django.db.models import Q
 from django.http import HttpResponse
 from django.conf import settings
+from tastypie.authentication import MultiAuthentication, SessionAuthentication
 
 from tastypie.constants import ALL, ALL_WITH_RELATIONS
 from tastypie.resources import ModelResource
@@ -44,7 +45,7 @@ from geonode.documents.models import Document
 from geonode.base.models import ResourceBase
 from geonode.base.models import HierarchicalKeyword
 
-from .authorization import GeoNodeAuthorization
+from .authorization import GeoNodeAuthorization, GeonodeApiKeyAuthentication
 
 from .api import TagResource, RegionResource, OwnersResource
 from .api import ThesaurusKeywordResource
@@ -105,6 +106,12 @@ class CommonModelApi(ModelResource):
         'thumbnail_url',
         'detail_url',
         'rating',
+        'scientific_quality',
+        'calculation_method_quality',
+        'hazard_type',
+        'hazard_unit',
+        'hazard_period',
+        'hazard_set',
     ]
 
     def build_filters(self, filters=None):
@@ -627,6 +634,7 @@ class ResourceBaseResource(CommonModelApi):
             queryset = queryset.filter(is_published=True)
         resource_name = 'base'
         excludes = ['csw_anytext', 'metadata_xml']
+        authentication = MultiAuthentication(SessionAuthentication(), GeonodeApiKeyAuthentication())
 
 
 class FeaturedResourceBaseResource(CommonModelApi):
@@ -638,11 +646,16 @@ class FeaturedResourceBaseResource(CommonModelApi):
         if settings.RESOURCE_PUBLISHING:
             queryset = queryset.filter(is_published=True)
         resource_name = 'featured'
+        authentication = MultiAuthentication(SessionAuthentication(), GeonodeApiKeyAuthentication())
 
 
 class LayerResource(CommonModelApi):
 
     """Layer API"""
+
+    # copy parent attribute before modifying
+    VALUES = CommonModelApi.VALUES[:]
+    VALUES.append('typename')
 
     class Meta(CommonMetaApi):
         queryset = Layer.objects.distinct().order_by('-date')
@@ -650,6 +663,7 @@ class LayerResource(CommonModelApi):
             queryset = queryset.filter(is_published=True)
         resource_name = 'layers'
         excludes = ['csw_anytext', 'metadata_xml']
+        authentication = MultiAuthentication(SessionAuthentication(), GeonodeApiKeyAuthentication())
 
 
 class MapResource(CommonModelApi):
@@ -661,6 +675,7 @@ class MapResource(CommonModelApi):
         if settings.RESOURCE_PUBLISHING:
             queryset = queryset.filter(is_published=True)
         resource_name = 'maps'
+        authentication = MultiAuthentication(SessionAuthentication(), GeonodeApiKeyAuthentication())
 
 
 class DocumentResource(CommonModelApi):
@@ -674,3 +689,4 @@ class DocumentResource(CommonModelApi):
         if settings.RESOURCE_PUBLISHING:
             queryset = queryset.filter(is_published=True)
         resource_name = 'documents'
+        authentication = MultiAuthentication(SessionAuthentication(), GeonodeApiKeyAuthentication())
